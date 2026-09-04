@@ -30,6 +30,23 @@ if sys.platform == 'win32':
 # 禁用 SSL 警告 (用于 HTTP 检测)
 requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
 
+# ===== 全局禁用 SSL 验证（解决证书问题）=====
+import functools
+original_get = requests.get
+original_post = requests.post
+
+def new_get(url, *args, **kwargs):
+    kwargs.setdefault('verify', False)
+    return original_get(url, *args, **kwargs)
+
+def new_post(url, *args, **kwargs):
+    kwargs.setdefault('verify', False)
+    return original_post(url, *args, **kwargs)
+
+requests.get = new_get
+requests.post = new_post
+# ===========================================
+
 # ==================== 预编译正则 ====================
 NODE_PATTERN = re.compile(r"^(\d+\.\d+\.\d+\.\d+):(\d+)#(.+)$")
 IP_PORT_PATTERN = re.compile(r"^(\d+\.\d+\.\d+\.\d+):(\d+)#")
@@ -202,7 +219,16 @@ def load_config():
         "CF_DNS_CONNECT_TIMEOUT": 3,
         "CF_DNS_READ_TIMEOUT": 3,
         "DNS_RECORD_TYPE": "TXT",
-        "ADDITIONAL_SOURCES": [],
+        "ADDITIONAL_SOURCES": [
+    {
+        "url": "https://zip.cm.edu.kg/all.txt",
+        "enabled": True
+    },
+    {
+        "url": "https://countrymerge.pages.dev/all.txt",
+        "enabled": True
+    }
+],
         "FETCH_MAX_RETRIES": 3,
         "FETCH_RETRY_DELAY": 3,
         "FETCH_TIMEOUT": 3,
@@ -251,7 +277,7 @@ def load_config():
         "BANDWIDTH_TIMEOUT": 3,
         "BANDWIDTH_RETRY_MAX": 2,
         "BANDWIDTH_RETRY_DELAY": 3,
-        "BANDWIDTH_URL_TEMPLATE": "https://speed.cloudflare.com/__down?bytes={bytes}",
+        "BANDWIDTH_URL_TEMPLATE": "{scheme}://speed.cloudflare.com:{port}/__down?bytes={bytes}",
         "BANDWIDTH_PROCESS_BUFFER": 2,
         "BANDWIDTH_CONNECT_TIMEOUT": 3,
         "SPEED_WEIGHT": 3.0,
@@ -405,7 +431,6 @@ if FORCE_DIRECT:
     os.environ["NO_PROXY"] = "*"
 
 socket.setdefaulttimeout(SOCKET_DEFAULT_TIMEOUT)
-BANDWIDTH_URL = BANDWIDTH_URL_TEMPLATE.format(bytes=int(BANDWIDTH_SIZE_MB * 1024 * 1024))
 
 # ====================================================
 
@@ -1193,9 +1218,33 @@ def measure_bandwidth_curl(node_str):
     if not m:
         return (node_str, 0)
     ip, port = m.group(1), m.group(2)
+    port_int = int(port)
+
+    # ---------- 端口与协议的映射 ----------
+    HTTP_PORTS = {80, 8080, 8880, 2052, 2082, 2086, 2095}
+    HTTPS_PORTS = {443, 2053, 2083, 2087, 2096, 8443}
+
+    if port_int in HTTP_PORTS:
+        scheme = "http"
+        insecure_flag = []          # HTTP 不需要 --insecure
+    elif port_int in HTTPS_PORTS:
+        scheme = "https"
+        insecure_flag = ["--insecure"]
+    else:
+        # 未知端口，默认尝试 https（保险）
+        scheme = "https"
+        insecure_flag = ["--insecure"]
+    # ---------------------------------------
 
     null_device = "NUL" if sys.platform == "win32" else "/dev/null"
     expected_size = BANDWIDTH_SIZE_MB * 1024 * 1024
+
+    # 用模板生成最终 URL，替换 {scheme}、{port}、{bytes}
+    url = BANDWIDTH_URL_TEMPLATE.format(
+        scheme=scheme,
+        port=port,
+        bytes=int(BANDWIDTH_SIZE_MB * 1024 * 1024)
+    )
 
     curl_cmd = [
         "curl", "-s", "-o", null_device,
@@ -1207,9 +1256,7 @@ def measure_bandwidth_curl(node_str):
         "--resolve", f"speed.cloudflare.com:{port}:{ip}",
         "--connect-timeout", str(BANDWIDTH_CONNECT_TIMEOUT),
         "--max-time", str(BANDWIDTH_TIMEOUT),
-        "--insecure",
-        BANDWIDTH_URL
-    ]
+    ] + insecure_flag + [url]   # 动态添加 --insecure（如果是 https）
 
     try:
         result = subprocess.run(curl_cmd, capture_output=True, text=True,
