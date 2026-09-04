@@ -213,6 +213,7 @@ def load_config():
         "FETCH_TIMEOUT": 3,
         "FETCH_CONNECT_TIMEOUT": 3,
         "IP_CALIBRATION_ENABLED": False,
+        "TOKEN_FAILURE_THRESHOLD": 1,
         "IP_CALIBRATION_MIN_INTERVAL": 0.1,
         "IP_CALIBRATION_TOKEN_FILE": "valid_tokens.txt",
         "IP_CALIBRATION_CACHE_FILE": "ipinfo_cache.txt",
@@ -338,6 +339,7 @@ FETCH_RETRY_DELAY = cfg["FETCH_RETRY_DELAY"]
 FETCH_TIMEOUT = cfg["FETCH_TIMEOUT"]
 FETCH_CONNECT_TIMEOUT = cfg["FETCH_CONNECT_TIMEOUT"]
 IP_CALIBRATION_ENABLED = cfg["IP_CALIBRATION_ENABLED"]
+TOKEN_FAILURE_THRESHOLD = cfg["TOKEN_FAILURE_THRESHOLD"]
 IP_CALIBRATION_MIN_INTERVAL = cfg["IP_CALIBRATION_MIN_INTERVAL"]
 IP_CALIBRATION_TOKEN_FILE = cfg["IP_CALIBRATION_TOKEN_FILE"]
 IP_CALIBRATION_CACHE_FILE = cfg["IP_CALIBRATION_CACHE_FILE"]
@@ -683,10 +685,9 @@ def fetch_additional_source(url):
 
 # =========================== IP 地区校准模块 ===========================
 class IpInfoAsync:
-    def __init__(self, token_list, concurrency=10, min_interval=0.1, trust_env=True):
+    def __init__(self, token_list, concurrency, min_interval, trust_env, failure_threshold):
         self.token_list = token_list
         self.current_token_index = 0
-        self.exhausted = False
         self.token_lock = asyncio.Lock()
         self.semaphore = asyncio.Semaphore(concurrency)
         self.min_interval = min_interval
@@ -694,31 +695,29 @@ class IpInfoAsync:
         self.rate_lock = asyncio.Lock()
         self.session = None
         self.trust_env = trust_env
+        self.failure_threshold = failure_threshold
+        self.token_failures = [0] * len(token_list)
 
     async def __aenter__(self):
         self.session = aiohttp.ClientSession(trust_env=self.trust_env)
         return self
 
-    async def __aexit__(self, *args):
-        await self.session.close()
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if self.session:
+            await self.session.close()
 
     @property
     def current_token(self):
-        if self.exhausted:
-            return None
-        return self.token_list[self.current_token_index]
+        if self.current_token_index < len(self.token_list):
+            return self.token_list[self.current_token_index]
+        return None
 
     async def switch_token(self, silent=False):
         async with self.token_lock:
-            if self.exhausted:
-                return False
             if self.current_token_index + 1 < len(self.token_list):
                 self.current_token_index += 1
                 return True
             else:
-                self.exhausted = True
-                if not silent:
-                    print("\n所有 token 均已触发 429 速率限制，无可用 token！后续 IP 将直接标记为 Unknown。")
                 return False
 
     async def _rate_limit(self):
@@ -730,54 +729,57 @@ class IpInfoAsync:
             self.last_request_time = asyncio.get_event_loop().time()
 
     async def get_ip_details(self, ip_address):
-        """查询单个 IP 详情，增加本机校验支持，超时直接返回 None"""
-        while True:
+        attempted = 0
+        max_attempts = len(self.token_list)
+        while attempted < max_attempts:
             token = self.current_token
             if token is None:
                 return None
+            idx = self.current_token_index
+            if self.token_failures[idx] >= self.failure_threshold:
+                if await self.switch_token():
+                    attempted += 1
+                    continue
+                else:
+                    return None
 
-            # 如果是空字符串，查本机，否则查指定 IP
-            if ip_address:
-                url = f"https://ipinfo.io/{ip_address}/json?token={token}"
-            else:
-                url = f"https://ipinfo.io/json?token={token}"
-
+            url = f"https://ipinfo.io/{ip_address}/json?token={token}" if ip_address else f"https://ipinfo.io/json?token={token}"
             await self._rate_limit()
             async with self.semaphore:
                 try:
                     async with self.session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
                         if resp.status == 429:
+                            self.token_failures[idx] += 1
                             if await self.switch_token():
+                                attempted += 1
                                 continue
                             else:
                                 return None
                         resp.raise_for_status()
                         data = await resp.json()
-                        city = data.get("city", "Unknown")
+                        self.token_failures[idx] = 0
                         country = data.get("country", "Unknown")
-                        region = data.get("region", "Unknown")
-                        org = data.get("org", "")
-                        asn = "Unknown"
-                        isp = "Unknown"
-                        if org:
-                            parts = org.split(" ", 1)
-                            if len(parts) == 2 and parts[0].startswith("AS"):
-                                asn = parts[0]
-                                isp = parts[1]
+                        if country == "Unknown":
+                            if await self.switch_token():
+                                attempted += 1
+                                continue
                             else:
-                                isp = org
+                                return None
                         return {
                             "CountryCode": country,
-                            "Region": region,
-                            "City": city,
-                            "ASN": asn,
-                            "ISP": isp,
+                            "Region": data.get("region", "Unknown"),
+                            "City": data.get("city", "Unknown"),
+                            "ASN": data.get("org", "").split(" ")[0] if data.get("org", "").startswith("AS") else "Unknown",
+                            "ISP": data.get("org", "").split(" ", 1)[-1] if " " in data.get("org", "") else data.get("org", "Unknown"),
                         }
-                except asyncio.TimeoutError:
-                    return None
-                except aiohttp.ClientError as e:
-                    print(f"\n请求 IP {ip_address} 失败: {e}，2秒后重试...")
-                    await asyncio.sleep(2)
+                except (asyncio.TimeoutError, aiohttp.ClientError):
+                    self.token_failures[idx] += 1
+                    if await self.switch_token():
+                        attempted += 1
+                        continue
+                    else:
+                        return None
+        return None
 
 def load_tokens(filepath):
     if not os.path.exists(filepath):
@@ -830,11 +832,7 @@ def sort_cache_file(cache_file):
 
 async def validate_tokens(token_list, concurrency, min_interval, trust_env):
     valid = []
-    async with IpInfoAsync(token_list, concurrency, min_interval, trust_env) as handler:
-        # 让校验期间的所有 token 切换静默（不打印任何切换信息，也不打印“耗尽”误报）
-        handler.switch_token = lambda: IpInfoAsync.switch_token(handler, silent=True)
-
-        # 传入空字符串作为 IP 地址，让 get_ip_details 自动查本机
+    async with IpInfoAsync(token_list, concurrency, min_interval, trust_env, TOKEN_FAILURE_THRESHOLD) as handler:
         tasks = [asyncio.ensure_future(handler.get_ip_details("")) for _ in token_list]
         total = len(tasks)
         completed = 0
@@ -855,12 +853,11 @@ async def validate_tokens(token_list, concurrency, min_interval, trust_env):
 async def query_new_ips(new_ips, token_list, concurrency, min_interval, trust_env,
                         ipport_map=None, cache_file=None):
     result = {}
-    exhausted_flag = False
     if not new_ips or not token_list:
-        return result, exhausted_flag
+        return result
 
     print(f"需要查询 {len(new_ips)} 个新 IP...")
-    async with IpInfoAsync(token_list, concurrency, min_interval, trust_env) as handler:
+    async with IpInfoAsync(token_list, concurrency, min_interval, trust_env, TOKEN_FAILURE_THRESHOLD) as handler:
         tasks = []
         for ip in new_ips:
             task = asyncio.ensure_future(handler.get_ip_details(ip))
@@ -868,6 +865,7 @@ async def query_new_ips(new_ips, token_list, concurrency, min_interval, trust_en
             tasks.append(task)
         total = len(tasks)
         completed = 0
+        failed = 0
 
         f = None
         if cache_file:
@@ -884,8 +882,6 @@ async def query_new_ips(new_ips, token_list, concurrency, min_interval, trust_en
                     except Exception:
                         info = None
                     completed += 1
-                    print(f"\r[{completed}/{total}] 地区校准...", end="", flush=True)
-
                     if info and info.get("CountryCode") != "Unknown":
                         tag_parts = [info["CountryCode"]]
                         if info.get("Region") and info["Region"] != "Unknown":
@@ -898,17 +894,21 @@ async def query_new_ips(new_ips, token_list, concurrency, min_interval, trust_en
                             tag_parts.append(info["ISP"])
                         tag = " ".join(tag_parts)
                         result[ip] = tag
-
                         if f and ipport_map and ip in ipport_map:
                             for ipport in ipport_map[ip]:
                                 f.write(f"{ipport}#{tag}\n")
                                 f.flush()
+                    else:
+                        failed += 1
+                    print(f"\r[{completed}/{total}] 地区校准...", end="", flush=True)
         finally:
             if f:
                 f.close()
-        exhausted_flag = handler.exhausted
     print()
-    return result, exhausted_flag
+    if total > 0 and failed == total:
+        send_wxpusher_notification("IP地区校准：所有IP查询均失败，可能所有token均已失效。", "IP校准全失败")
+        print("警告：所有 IP 地区校准失败，可能所有 token 已失效。")
+    return result
 
 def calibrate_regions(nodes, token_file, cache_file):
     if not IP_CALIBRATION_ENABLED:
@@ -950,7 +950,7 @@ def calibrate_regions(nodes, token_file, cache_file):
             ip_to_ipports[ip].append(ipport)
 
         print(f"检测到 {len(new_ipports)} 个新 IP:端口，涉及 {len(new_ips_set)} 个唯一 IP，开始查询...")
-        ip_info, token_exhausted = asyncio.run(query_new_ips(
+        ip_info = asyncio.run(query_new_ips(
             list(new_ips_set),
             valid_tokens,
             IP_CALIBRATION_CONCURRENCY,
@@ -964,15 +964,11 @@ def calibrate_regions(nodes, token_file, cache_file):
             for ipport in ip_to_ipports.get(ip, []):
                 cache[ipport] = tag
 
-        fail_count = len(new_ipports) - sum(1 for ip in ip_info for _ in ip_to_ipports.get(ip, []))
-        if token_exhausted:
-            send_wxpusher_notification(f"IP地区校准：token已全部触发速率限制，{fail_count} 个新IP未能校准。", "IP校准 Token 耗尽")
-
     for i, node in enumerate(nodes):
         ipport = node.split('#')[0]
         tag = cache.get(ipport)
         if tag:
-            country_code = tag.split()[0]  # 只保留国家代码
+            country_code = tag.split()[0]
             nodes[i] = f"{ipport}#{country_code}"
 
     sort_cache_file(cache_file)
