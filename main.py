@@ -5,11 +5,6 @@ Cloudflare IP 优选工具 (TCP筛选 + IP可用性二次筛选 + HTTP检测 + c
 配置文件：同目录下的 config.json
 结果保存到 ip.txt，并自动推送到 GitHub，同时批量更新到 Cloudflare DNS
 支持 Windows / Linux
-优化：国家过滤前置，减少无效 TCP 测试；重试参数可配置；所有网络请求连接超时分离
-新增：IP 地区校准 + 缓存差异化更新
-修复：asyncio.TimeoutError 导致崩溃；事件循环残留警告；增加进度提示；实时写入缓存文件
-新增：缓存文件按 IP 地址自动排序
-修复：节点标签只保留国家代码；token耗尽通知只在真正耗尽时发送
 """
 
 import requests
@@ -1320,7 +1315,7 @@ def batch_update_cloudflare_dns(ip_list, ip_info=None, full_bw_results=None, tar
             pure_ip = parts[0]
             port = parts[1].split('#')[0]
 
-            if port != '443':
+            if record_type == "A" and port != '443':
                 filtered_by_port += 1
                 continue
 
