@@ -204,10 +204,10 @@ def load_config():
         "PRE_FILTER_BLOCKED_COUNTRIES": ["CN"],
         "PRE_FILTER_PORT_ENABLED": True,
         "PRE_FILTER_PORTS": [443],
-        "ENABLE_WXPUSHER": True,
-        "WXPUSHER_APP_TOKEN": "your_app_token_here",
-        "WXPUSHER_UIDS": ["your_uid_here"],
-        "WXPUSHER_API_URL": "https://wxpusher.zjiecode.com/api/send/message",
+        "ENABLE_TG": True,
+        "TG_BOT_TOKEN": "",
+        "TG_CHAT_ID": "",
+        "TG_API_URL": "https://api.telegram.org",
         "NOTIFY_TIMEOUT": 3,
         "NOTIFY_CONNECT_TIMEOUT": 3,
         "CF_ENABLED": True,
@@ -339,12 +339,12 @@ PRE_FILTER_BLOCKED_ENABLED = cfg["PRE_FILTER_BLOCKED_ENABLED"]
 PRE_FILTER_BLOCKED_COUNTRIES = [c.upper() for c in cfg["PRE_FILTER_BLOCKED_COUNTRIES"]]
 PRE_FILTER_PORT_ENABLED = cfg["PRE_FILTER_PORT_ENABLED"]
 PRE_FILTER_PORTS = [str(p) for p in cfg["PRE_FILTER_PORTS"]]
-ENABLE_WXPUSHER = cfg["ENABLE_WXPUSHER"]
-WXPUSHER_APP_TOKEN = cfg["WXPUSHER_APP_TOKEN"]
-WXPUSHER_UIDS = cfg["WXPUSHER_UIDS"]
-WXPUSHER_API_URL = cfg["WXPUSHER_API_URL"]
-NOTIFY_TIMEOUT = cfg["NOTIFY_TIMEOUT"]
-NOTIFY_CONNECT_TIMEOUT = cfg["NOTIFY_CONNECT_TIMEOUT"]
+ENABLE_TG = cfg.get("ENABLE_TG", True)
+TG_BOT_TOKEN = cfg.get("TG_BOT_TOKEN", "")
+TG_CHAT_ID = cfg.get("TG_CHAT_ID", "")
+TG_API_URL = cfg.get("TG_API_URL", "https://api.telegram.org").rstrip("/")
+NOTIFY_TIMEOUT = cfg.get("NOTIFY_TIMEOUT", 3)
+NOTIFY_CONNECT_TIMEOUT = cfg.get("NOTIFY_CONNECT_TIMEOUT", 3)
 CF_ENABLED = cfg["CF_ENABLED"]
 CF_API_TOKEN = cfg["CF_API_TOKEN"]
 CF_ZONE_ID = cfg["CF_ZONE_ID"]
@@ -434,29 +434,34 @@ socket.setdefaulttimeout(SOCKET_DEFAULT_TIMEOUT)
 
 # ====================================================
 
-def send_wxpusher_notification(content, summary):
-    if not ENABLE_WXPUSHER:
+def send_tg_notification(content, summary):
+    if not ENABLE_TG or not TG_BOT_TOKEN or not TG_CHAT_ID:
         return
     try:
+        # 直接使用你的反代域名拼接 API
+        tg_url = f"{TG_API_URL}/bot{TG_BOT_TOKEN}/sendMessage"
+        tg_text = f"*{summary}*\n\n{content}"
+
         payload = {
-            "appToken": WXPUSHER_APP_TOKEN,
-            "content": content,
-            "summary": summary,
-            "uids": WXPUSHER_UIDS
+            "chat_id": TG_CHAT_ID,
+            "text": tg_text,
+            "parse_mode": "Markdown"
         }
-        headers = {"Content-Type": "application/json; charset=utf-8"}
+
         resp = requests.post(
-            WXPUSHER_API_URL,
-            data=json.dumps(payload),
-            headers=headers,
+            tg_url,
+            json=payload,
             timeout=(NOTIFY_CONNECT_TIMEOUT, NOTIFY_TIMEOUT)
         )
         if resp.status_code == 200:
-            print("微信通知已发送")
+            print("Telegram 通知已发送")
         else:
-            print(f"微信通知发送失败: {resp.status_code}")
+            print(f"Telegram 通知发送失败: {resp.status_code}")
     except Exception as e:
-        print(f"微信通知异常: {e}")
+        print(f"Telegram 通知异常: {e}")
+
+# 这一行极其重要：做个别名映射，这样底下原本调用微信发送的代码就全都不用改了！
+send_wxpusher_notification = send_tg_notification
 
 # ==================== IP 风险等级查询 ====================
 RISK_LEVEL_ORDER = {
@@ -1470,7 +1475,7 @@ def batch_update_cloudflare_dns(ip_list, ip_info=None, full_bw_results=None, tar
             http_lat_ms = http_latency_map[node]
         if http_jitter_map and node in http_jitter_map:
             http_jitter_ms = http_jitter_map[node]
-        
+
         # 让显示标签带上国家代码
         display_label = node if '#' in node else content
         line = f"{i}. {display_label} 速度 {speed:.2f} Mbps"
@@ -1522,7 +1527,7 @@ def batch_update_cloudflare_dns(ip_list, ip_info=None, full_bw_results=None, tar
 
                 success_msg = f"Cloudflare DNS 批量更新成功！已将 {CF_DNS_RECORD_NAME} 指向 {len(dns_content_list)} 个 IP。"
                 print(success_msg)
-                return
+                return len(dns_content_list)  # 返回实际成功提交的 IP 数量
 
             except Exception as e:
                 error_msg = f"[尝试 {attempt}/{DNS_UPDATE_MAX_RETRIES}] DNS 更新出错: {e}"
@@ -1533,6 +1538,7 @@ def batch_update_cloudflare_dns(ip_list, ip_info=None, full_bw_results=None, tar
                     final_error = f"Cloudflare DNS 更新失败，已重试 {DNS_UPDATE_MAX_RETRIES} 次，错误：{e}"
                     print(final_error)
                     send_wxpusher_notification(content=final_error, summary="DNS 更新失败")
+                    return False  # 彻底失败时汇报 False
 
     else:
         for attempt in range(1, DNS_UPDATE_MAX_RETRIES + 1):
@@ -1564,7 +1570,7 @@ def batch_update_cloudflare_dns(ip_list, ip_info=None, full_bw_results=None, tar
                     raise Exception(f"批量更新失败: {result.get('errors')}")
 
                 print(f"Cloudflare TXT 记录批量更新成功！共 {len(dns_content_list)} 条记录，每条内容为一个 IP:端口。")
-                return
+                return len(dns_content_list)  # 返回实际成功提交的 IP 数量
 
             except Exception as e:
                 error_msg = f"[尝试 {attempt}/{DNS_UPDATE_MAX_RETRIES}] TXT 更新出错: {e}"
@@ -1575,8 +1581,11 @@ def batch_update_cloudflare_dns(ip_list, ip_info=None, full_bw_results=None, tar
                     final_error = f"Cloudflare TXT 记录更新失败，已重试 {DNS_UPDATE_MAX_RETRIES} 次，错误：{e}"
                     print(final_error)
                     send_wxpusher_notification(content=final_error, summary="DNS 更新失败")
+                    return False  # 彻底失败时汇报 False
 
 def sync_to_github():
+    print("\n[网络冷却] 测速结束，等待 10 秒释放系统底层 TCP 连接池...")
+    time.sleep(10)
     script_dir = os.path.dirname(os.path.abspath(__file__))
 
     if sys.platform == "win32":
@@ -1608,6 +1617,7 @@ def sync_to_github():
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                encoding="utf-8", errors="replace",
                 creationflags=creationflags
             )
 
@@ -1615,7 +1625,10 @@ def sync_to_github():
                 stdout, stderr = process.communicate(timeout=GIT_SYNC_PROCESS_TIMEOUT)
                 if process.returncode == 0:
                     print("已自动推送到 GitHub。")
-                    return
+                    # 强行把后台的 git 运行日志打印出来，让你看得明明白白
+                    if stdout:
+                        print(stdout.strip())
+                    return True
                 else:
                     print(f"推送失败 (退出码 {process.returncode})")
                     if stderr:
@@ -1634,6 +1647,7 @@ def sync_to_github():
         summary="GitHub 推送失败"
     )
     print(f"已尝试 {GITHUB_SYNC_MAX_RETRIES} 次推送，均失败，请检查网络或 GitHub 仓库状态。")
+    return False
 
 def write_ip_txt(final_nodes, output_file,
                  header_enabled, header_lines,
@@ -1645,8 +1659,10 @@ def write_ip_txt(final_nodes, output_file,
         if header_enabled:
             for line in header_lines:
                 f.write(line + "\n")
-        for node in final_nodes:
-            line = node
+        for i, node in enumerate(final_nodes, 1):
+            # node 本身自带 #JP，我们在它后面加上带前导零的序号（01, 02...）
+            line = f"{node} {i:02d}"
+
             if IP_TXT_SHOW_BANDWIDTH and speed_map and node in speed_map:
                 line += f" {speed_map[node]:.2f} Mbps"
             if IP_TXT_SHOW_HTTP_LATENCY and http_latency_map and node in http_latency_map:
@@ -1872,7 +1888,8 @@ def main():
 
     ip_list = [node.split(':')[0] for node in final_selected]
 
-    batch_update_cloudflare_dns(
+# 接收两个核心步骤的执行结果
+    cf_status = batch_update_cloudflare_dns(
         ip_list,
         ip_info=avail_ip_info,
         full_bw_results=bw_results,
@@ -1882,7 +1899,43 @@ def main():
         http_jitter_map=http_jitter_map
     )
 
-    sync_to_github()
+    git_status = sync_to_github()
+
+    # ================= 新增：大满贯战报通知 =================
+    # 智能拦截逻辑：只要 CF 或 GitHub 有任意一个明确返回了 False（彻底失败），就不再发送成功战报
+    if cf_status is not False and git_status is not False:
+        summary_title = "✅ CFNB 节点优选与同步完成"
+        if final_selected:
+            top_speed = speed_map.get(final_selected[0], 0)
+
+            # 【新增逻辑】直接从节点字符串中提取地区码并自动去重 (例如从 IP:443#HK 中提取 HK)
+            regions_list = []
+            for node in final_selected:
+                if '#' in node:
+                    # 分割提取 # 后面的纯粹字母
+                    reg = node.split('#')[-1].split()[0].upper()
+                    if reg not in regions_list:
+                        regions_list.append(reg)
+            regions_str = f"{'/'.join(regions_list)} " if regions_list else ""
+
+            # 用 type(cf_status) is int 确保拿到的绝对是真实数字（比如 3）
+            cf_count = cf_status if type(cf_status) is int else len(ip_list)
+
+            # 【战报拼接】大满贯排版：单星号加粗 + 反引号高亮 + 地区码
+            content = (
+                f"👉 *已提取节点*：{regions_str}前 {len(final_selected)} 名\n"
+                f"🚀 *最高速度*：{top_speed:.2f} Mbps\n"
+                f"🌐 *Cloudflare*：`{CF_DNS_RECORD_NAME}` 负载 {cf_count} 个优选 IP\n"
+                f"📦 *GitHub*：`ProxyIP_SP` 已成功同步更新"
+            )
+        else:
+            content = "自动化任务执行完毕，但没有筛选出任何有效节点。"
+
+        send_tg_notification(content, summary_title)
+        print("\n[TG 通知] 成功战报已发送！")
+    else:
+        print("\n[TG 通知] 检测到关键步骤(CF或GitHub)执行失败，已发送独立报错通知，本次成功战报已拦截取消。")
+    # ========================================================
 
 if __name__ == "__main__":
     import atexit

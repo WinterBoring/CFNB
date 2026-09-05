@@ -1,4 +1,7 @@
 ﻿config.json
 git_sync.ps1
 git_sync.sh
+cfnb.log
+ipinfo_cache.txt
+valid_tokens.txt
 __pycache__/
