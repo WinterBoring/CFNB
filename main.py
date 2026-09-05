@@ -3,7 +3,7 @@
 Cloudflare IP 优选工具 (TCP筛选 + IP可用性二次筛选 + HTTP检测 + curl带宽测速 + WxPusher通知)
 依赖：requests, curl, aiohttp
 配置文件：同目录下的 config.json
-结果保存到 ip.txt，并自动推送到 GitHub，同时批量更新到 Cloudflare DNS
+结果保存到 ProxyIP_SP.txt，并自动推送到 GitHub，同时批量更新到 Cloudflare DNS
 支持 Windows / Linux
 """
 
@@ -238,7 +238,7 @@ def load_config():
         "IP_CALIBRATION_MIN_INTERVAL": 0.1,
         "IP_CALIBRATION_TOKEN_FILE": "valid_tokens.txt",
         "IP_CALIBRATION_CACHE_FILE": "ipinfo_cache.txt",
-        "OUTPUT_FILE": "ip.txt",
+        "OUTPUT_FILE": "ProxyIP_SP.txt",
         "ENABLE_LOGGING": False,
         "LOG_FILE": "cfnb.log",
         "FORCE_DIRECT": False,
@@ -1436,7 +1436,7 @@ def batch_update_cloudflare_dns(ip_list, ip_info=None, full_bw_results=None, tar
 
     if not dns_content_list:
         if ip_list:
-            print("未能从完整测速结果构建 DNS 列表，降级使用 ip.txt 中的 IP。")
+            print("未能从完整测速结果构建 DNS 列表，降级使用 ProxyIP_SP.txt 中的 IP。")
             if record_type == "A":
                 dns_content_list = ip_list
                 dns_node_list = ip_list
