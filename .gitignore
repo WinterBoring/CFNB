@@ -4,5 +4,5 @@ git_sync.sh
 cfnb.log
 ipinfo_cache.txt
 valid_tokens.txt
-ProxyIP_SP.txt
+ProxyIP_A.txt
 __pycache__/
