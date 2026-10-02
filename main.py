@@ -1968,7 +1968,7 @@ def main():
     # ================= 新增：大满贯战报通知 =================
     # 智能拦截逻辑：只要 CF 或 GitHub 有任意一个明确返回了 False（彻底失败），就不再发送成功战报
     if cf_status is not False and git_status is not False:
-        summary_title = "✅ CFNB 节点优选与同步完成"
+        summary_title = "✅ CFNB_AZURE 节点优选同步完成"
         if final_selected:
             top_speed = speed_map.get(final_selected[0], 0)
 
