@@ -486,30 +486,33 @@ def release_single_instance():
 # ====================================================
 
 def send_tg_notification(content, summary):
-    if not ENABLE_TG or not TG_BOT_TOKEN or not TG_CHAT_ID:
-        return
-    try:
-        # 直接使用你的反代域名拼接 API
-        tg_url = f"{TG_API_URL}/bot{TG_BOT_TOKEN}/sendMessage"
-        tg_text = f"*{summary}*\n\n{content}"
+if not ENABLE_TG or not TG_BOT_TOKEN or not TG_CHAT_ID:
+    return False
+try:
+    # 直接使用你的反代域名拼接 API
+    tg_url = f"{TG_API_URL}/bot{TG_BOT_TOKEN}/sendMessage"
+    tg_text = f"*{summary}*\n\n{content}"
 
-        payload = {
-            "chat_id": TG_CHAT_ID,
-            "text": tg_text,
-            "parse_mode": "Markdown"
-        }
+    payload = {
+        "chat_id": TG_CHAT_ID,
+        "text": tg_text,
+        "parse_mode": "Markdown"
+    }
 
-        resp = requests.post(
-            tg_url,
-            json=payload,
-            timeout=(NOTIFY_CONNECT_TIMEOUT, NOTIFY_TIMEOUT)
-        )
-        if resp.status_code == 200:
-            print("Telegram 通知已发送")
-        else:
-            print(f"Telegram 通知发送失败: {resp.status_code}")
-    except Exception as e:
-        print(f"Telegram 通知异常: {e}")
+    resp = requests.post(
+        tg_url,
+        json=payload,
+        timeout=(NOTIFY_CONNECT_TIMEOUT, NOTIFY_TIMEOUT)
+    )
+    if resp.status_code == 200:
+        print("Telegram 通知已发送")
+        return True
+    else:
+        print(f"Telegram 通知发送失败: {resp.status_code}")
+        return False
+except Exception as e:
+    print(f"Telegram 通知异常: {e}")
+    return False
 
 # 这一行极其重要：做个别名映射，这样底下原本调用微信发送的代码就全都不用改了！
 send_wxpusher_notification = send_tg_notification
@@ -1995,8 +1998,11 @@ def main():
         else:
             content = "自动化任务执行完毕，但没有筛选出任何有效节点。"
 
-        send_tg_notification(content, summary_title)
+        is_sent = send_tg_notification(content, summary_title)
+    if is_sent:
         print("\n[TG 通知] 成功战报已发送！")
+    else:
+        print("\n[TG 通知] 战报发送失败，网络异常或超时！")
     else:
         print("\n[TG 通知] 检测到关键步骤(CF或GitHub)执行失败，已发送独立报错通知，本次成功战报已拦截取消。")
     # ========================================================
