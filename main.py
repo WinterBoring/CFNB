@@ -489,7 +489,6 @@ def send_tg_notification(content, summary):
 if not ENABLE_TG or not TG_BOT_TOKEN or not TG_CHAT_ID:
     return False
 try:
-    # 直接使用你的反代域名拼接 API
     tg_url = f"{TG_API_URL}/bot{TG_BOT_TOKEN}/sendMessage"
     tg_text = f"*{summary}*\n\n{content}"
 
@@ -499,9 +498,15 @@ try:
         "parse_mode": "Markdown"
     }
 
+    # 新增：伪装成正常的 Chrome 浏览器，骗过 CF 防火墙
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    }
+
     resp = requests.post(
         tg_url,
         json=payload,
+        headers=headers,  # 注入伪装头
         timeout=(NOTIFY_CONNECT_TIMEOUT, NOTIFY_TIMEOUT)
     )
     if resp.status_code == 200:
