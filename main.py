@@ -486,38 +486,37 @@ def release_single_instance():
 # ====================================================
 
 def send_tg_notification(content, summary):
-if not ENABLE_TG or not TG_BOT_TOKEN or not TG_CHAT_ID:
-    return False
-try:
-    tg_url = f"{TG_API_URL}/bot{TG_BOT_TOKEN}/sendMessage"
-    tg_text = f"*{summary}*\n\n{content}"
-
-    payload = {
-        "chat_id": TG_CHAT_ID,
-        "text": tg_text,
-        "parse_mode": "Markdown"
-    }
-
-    # 新增：伪装成正常的 Chrome 浏览器，骗过 CF 防火墙
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-    }
-
-    resp = requests.post(
-        tg_url,
-        json=payload,
-        headers=headers,  # 注入伪装头
-        timeout=(NOTIFY_CONNECT_TIMEOUT, NOTIFY_TIMEOUT)
-    )
-    if resp.status_code == 200:
-        print("Telegram 通知已发送")
-        return True
-    else:
-        print(f"Telegram 通知发送失败: {resp.status_code}")
+    if not ENABLE_TG or not TG_BOT_TOKEN or not TG_CHAT_ID:
         return False
-except Exception as e:
-    print(f"Telegram 通知异常: {e}")
-    return False
+    try:
+        tg_url = f"{TG_API_URL}/bot{TG_BOT_TOKEN}/sendMessage"
+        tg_text = f"*{summary}*\n\n{content}"
+
+        payload = {
+            "chat_id": TG_CHAT_ID,
+            "text": tg_text,
+            "parse_mode": "Markdown"
+        }
+
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        }
+
+        resp = requests.post(
+            tg_url,
+            json=payload,
+            headers=headers,
+            timeout=(NOTIFY_CONNECT_TIMEOUT, NOTIFY_TIMEOUT)
+        )
+        if resp.status_code == 200:
+            print("Telegram 通知已发送")
+            return True
+        else:
+            print(f"Telegram 通知发送失败: {resp.status_code}")
+            return False
+    except Exception as e:
+        print(f"Telegram 通知异常: {e}")
+        return False
 
 # 这一行极其重要：做个别名映射，这样底下原本调用微信发送的代码就全都不用改了！
 send_wxpusher_notification = send_tg_notification
@@ -1980,20 +1979,17 @@ def main():
         if final_selected:
             top_speed = speed_map.get(final_selected[0], 0)
 
-            # 【新增逻辑】直接从节点字符串中提取地区码并自动去重 (例如从 IP:443#HK 中提取 HK)
+            # 【新增逻辑】直接从节点字符串中提取地区码并自动去重
             regions_list = []
             for node in final_selected:
                 if '#' in node:
-                    # 分割提取 # 后面的纯粹字母
                     reg = node.split('#')[-1].split()[0].upper()
                     if reg not in regions_list:
                         regions_list.append(reg)
             regions_str = f"{'/'.join(regions_list)} " if regions_list else ""
 
-            # 用 type(cf_status) is int 确保拿到的绝对是真实数字（比如 3）
             cf_count = cf_status if type(cf_status) is int else len(ip_list)
 
-            # 【战报拼接】大满贯排版：单星号加粗 + 反引号高亮 + 地区码
             content = (
                 f"👉 *已提取节点*：{regions_str}前 {len(final_selected)} 名\n"
                 f"🚀 *最高速度*：{top_speed:.2f} Mbps\n"
@@ -2004,10 +2000,10 @@ def main():
             content = "自动化任务执行完毕，但没有筛选出任何有效节点。"
 
         is_sent = send_tg_notification(content, summary_title)
-    if is_sent:
-        print("\n[TG 通知] 成功战报已发送！")
-    else:
-        print("\n[TG 通知] 战报发送失败，网络异常或超时！")
+        if is_sent:
+            print("\n[TG 通知] 成功战报已发送！")
+        else:
+            print("\n[TG 通知] 战报发送失败，网络异常或超时！")
     else:
         print("\n[TG 通知] 检测到关键步骤(CF或GitHub)执行失败，已发送独立报错通知，本次成功战报已拦截取消。")
     # ========================================================
