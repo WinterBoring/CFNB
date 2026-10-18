@@ -1970,16 +1970,23 @@ def main():
         http_jitter_map=http_jitter_map
     )
 
-    git_status = sync_to_github()
+    # 【零侵入拦截】：如果不推送，压根就不去调用原作者的函数，彻底避开内部的报错通知
+    if GITHUB_SYNC_MAX_RETRIES > 0:
+        git_status = sync_to_github()
+    else:
+        print("\n[GitHub 同步] 配置中已关闭 GitHub 推送 (重试次数设为 0)，主动跳过。")
+        git_status = None
 
     # ================= 新增：大满贯战报通知 =================
-    # 智能拦截逻辑：只要 CF 或 GitHub 有任意一个明确返回了 False（彻底失败），就不再发送成功战报
-    if cf_status is not False and git_status is not False:
+    # 智能拦截逻辑：只要明确返回了 False，才视为执行报错
+    is_git_failed = (git_status is False)
+    is_cf_failed = CF_ENABLED and (cf_status is False)
+
+    if not is_cf_failed and not is_git_failed:
         summary_title = "✅ CFNB_AZURE 节点优选同步完成"
         if final_selected:
             top_speed = speed_map.get(final_selected[0], 0)
 
-            # 【新增逻辑】直接从节点字符串中提取地区码并自动去重
             regions_list = []
             for node in final_selected:
                 if '#' in node:
@@ -1988,13 +1995,15 @@ def main():
                         regions_list.append(reg)
             regions_str = f"{'/'.join(regions_list)} " if regions_list else ""
 
-            cf_count = cf_status if type(cf_status) is int else len(ip_list)
+            # 动态生成战报内容
+            cf_text = f"🌐 *Cloudflare*：`{CF_DNS_RECORD_NAME}` 负载 {cf_status if type(cf_status) is int else len(ip_list)} 个优选 IP\n" if CF_ENABLED else "🌐 *Cloudflare*：(已跳过更新)\n"
+            gh_text = f"📦 *GitHub*：`ProxyIP_A` 已成功同步更新" if GITHUB_SYNC_MAX_RETRIES > 0 else "📦 *GitHub*：(已跳过同步)"
 
             content = (
                 f"👉 *已提取节点*：{regions_str}前 {len(final_selected)} 名\n"
                 f"🚀 *最高速度*：{top_speed:.2f} Mbps\n"
-                f"🌐 *Cloudflare*：`{CF_DNS_RECORD_NAME}` 负载 {cf_count} 个优选 IP\n"
-                f"📦 *GitHub*：`ProxyIP_A` 已成功同步更新"
+                f"{cf_text}"
+                f"{gh_text}"
             )
         else:
             content = "自动化任务执行完毕，但没有筛选出任何有效节点。"
@@ -2005,7 +2014,11 @@ def main():
         else:
             print("\n[TG 通知] 战报发送失败，网络异常或超时！")
     else:
-        print("\n[TG 通知] 检测到关键步骤(CF或GitHub)执行失败，已发送独立报错通知，本次成功战报已拦截取消。")
+        err_msg = "检测到启用的关键步骤执行失败：\n"
+        if is_cf_failed: err_msg += "❌ Cloudflare DNS 更新失败\n"
+        if is_git_failed: err_msg += "❌ GitHub 同步失败\n"
+        print(f"\n[TG 通知] {err_msg}已拦截取消成功战报。")
+        send_tg_notification(err_msg, "⚠️ CFNB 关键步骤失败")
     # ========================================================
 
 if __name__ == "__main__":
