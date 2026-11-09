@@ -583,9 +583,7 @@ def send_tg_notification(content, summary):
             "parse_mode": "Markdown"
         }
 
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        }
+        headers = {"Content-Type": "application/json; charset=utf-8", "User-Agent": USER_AGENT}
 
         resp = requests.post(
             tg_url,
